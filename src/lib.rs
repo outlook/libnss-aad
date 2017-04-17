@@ -19,10 +19,10 @@ use std::io::prelude::*;
 use std::ptr::copy_nonoverlapping;
 
 enum NssStatus {
-    NssStatusTryagain = -2,
-    NssStatusUnavail,
-    NssStatusNotfound,
-    NssStatusSuccess
+    TryAgain = -2,
+    Unavailable,
+    NotFound,
+    Success
         // NssStatusReturn exists in passwd.h but is not used here
 }
 
@@ -63,7 +63,7 @@ pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: 
         Err(_) => { return nss_input_file_err(errnop); }
     };
 
-    let userinfo = match azure::get_user_info(config, name) {
+    let userinfo = match azure::get_user_info(&config, name) {
         Ok(i) => i,
         Err(e) => {
             match e {
@@ -83,8 +83,8 @@ pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: 
         (*pw).pw_gid = userinfo.userid as gid_t;
     }
 
-    match fill_buffer(pw, buffer, buflen, userinfo.username, userinfo.fullname) {
-        Ok(()) => NssStatus::NssStatusSuccess as i32,
+    match fill_buffer(pw, buffer, buflen, &userinfo.username, userinfo.fullname) {
+        Ok(()) => NssStatus::Success as i32,
         Err(e) => match e {
             PasswdBufferFillError::ZeroByteInString => nss_entry_not_available(errnop),
             _ => nss_insufficient_buffer(errnop)
@@ -92,11 +92,11 @@ pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: 
     }
 }
 
-fn fill_buffer(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, username: String, fullname: String) -> PasswdBufferFillResult<()> {
+fn fill_buffer(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, username: &str, fullname: String) -> PasswdBufferFillResult<()> {
     if pw.is_null() || buffer.is_null() || buflen == 0 {
         return Err(PasswdBufferFillError::NullPointerError);
     }
-    let c_name = CString::new(username.clone())?.into_bytes_with_nul();
+    let c_name = CString::new(username)?.into_bytes_with_nul();
     let c_passwd = CString::new("*")?.into_bytes_with_nul();
     let c_gecos = CString::new(fullname)?.into_bytes_with_nul();
     let c_dir = CString::new(format!("/home/{}", username))?.into_bytes_with_nul();
@@ -133,27 +133,27 @@ fn fill_buffer(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, username: S
 
 fn nss_out_of_service(errnop: *mut i32) -> i32 {
     unsafe { *errnop = EAGAIN };
-    NssStatus::NssStatusTryagain as i32
+    NssStatus::TryAgain as i32
 }
 
 fn nss_insufficient_buffer(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ERANGE };
-    NssStatus::NssStatusTryagain as i32
+    NssStatus::TryAgain as i32
 }
 
 fn nss_input_file_err(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ENOENT };
-    NssStatus::NssStatusUnavail as i32
+    NssStatus::Unavailable as i32
 }
 
 fn nss_entry_not_available(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ENOENT };
-    NssStatus::NssStatusNotfound as i32
+    NssStatus::NotFound as i32
 }
 
 fn nss_no_entries_available(errnop: *mut i32) -> i32 {
     unsafe { *errnop = 0 };
-    NssStatus::NssStatusNotfound as i32
+    NssStatus::NotFound as i32
 }
 
 

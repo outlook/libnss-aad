@@ -23,7 +23,7 @@ fn get_ssl_client() -> hyper::Client {
     hyper::Client::with_connector(connector)
 }
 
-fn post_query(url: &str, query: Query) -> UserInfoResult<String> {
+fn post_query(url: &str, query: &Query) -> UserInfoResult<String> {
     let client = get_ssl_client();
     let body = form_urlencoded::Serializer::new(String::new())
         .extend_pairs(query.iter())
@@ -64,7 +64,7 @@ fn extract_token(json: &str) -> UserInfoResult<String> {
 
 
 fn extract_user_info(json: &str) -> UserInfoResult<UserInfo> {
-    let userinfo = serde_json::from_str::<Value>(&json)?;
+    let userinfo = serde_json::from_str::<Value>(json)?;
     let user_principal_name = userinfo["userPrincipalName"]
         .as_str()
         .ok_or(UserInfoRetrievalError::BadJSONResponse)?
@@ -89,7 +89,7 @@ fn extract_user_info(json: &str) -> UserInfoResult<UserInfo> {
 }
 
 
-pub fn get_user_info(config: AadConfig, username: &str) -> UserInfoResult<UserInfo> {
+pub fn get_user_info(config: &AadConfig, username: &str) -> UserInfoResult<UserInfo> {
 
     let auth_url = format!("https://login.microsoftonline.com/{}/oauth2/token?api-version=1.0",
                            config.tenant);
@@ -98,7 +98,7 @@ pub fn get_user_info(config: AadConfig, username: &str) -> UserInfoResult<UserIn
         ("grant_type", "client_credentials"),
         ("client_id", &config.client_id),
         ("client_secret", &config.client_secret)];
-    let token_json = post_query(&auth_url, auth_params)?;
+    let token_json = post_query(&auth_url, &auth_params)?;
 
     let token = extract_token(&token_json)?;
 
