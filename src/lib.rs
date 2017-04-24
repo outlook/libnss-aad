@@ -1,3 +1,4 @@
+extern crate core;
 extern crate libc;
 
 #[macro_use]
@@ -9,10 +10,12 @@ extern crate serde_yaml;
 mod azure;
 mod error;
 
-use error::{UserInfoRetrievalError, PasswdBufferFillError, PasswdBufferFillResult};
+use core::ptr::null_mut;
+use error::{GraphInfoRetrievalError, BufferFillError, BufferFillResult};
 use hyper::status::StatusCode;
-use libc::{c_char, uid_t, gid_t, size_t, passwd};
+use libc::{c_void, c_char, uid_t, gid_t, size_t, passwd, group};
 use libc::{ENOENT, EAGAIN, ERANGE};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::prelude::*;
@@ -30,7 +33,8 @@ enum NssStatus {
 pub struct AadConfig {
     client_id: String,
     client_secret: String,
-    tenant: String
+    tenant: String,
+    group_ids: HashMap<String, gid_t>
 }
 
 impl AadConfig {
@@ -43,14 +47,303 @@ impl AadConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct UserInfo {
     username: String,
     fullname: String,
     userid: u32 // too platform-specific? should this be something else?
 }
 
+#[derive(Debug)]
+pub struct GroupInfo {
+    groupname: String,
+    object_id: String
+}
+
+/*
+ *  name      IN     - the user name to find groups for
+ *  skipgroup IN     - a group to not include in the list
+ *  *start    IN/OUT - where to write in the array, is incremented
+ *  *size     IN/OUT - the size of the supplied array (gid_t entries, not bytes)
+ *  **groupsp IN/OUT - pointer to the array of returned groupids
+ *  limit     IN     - the maxium size of the array
+ *  *errnop   OUT    - for returning errno
+ */
+
 #[no_mangle]
-pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: *mut c_char, buflen: size_t, errnop: *mut i32) -> i32 {
+pub extern fn _nss_aad_initgroups_dyn(name: *const c_char, skipgroup: gid_t,
+                                      start: *mut size_t, size: *mut size_t,
+                                      mut groupsp: *mut *mut gid_t, limit: size_t,
+                                      errnop: *mut i32) -> i32 {
+    assert!(!groupsp.is_null() && !name.is_null() && !start.is_null() && !size.is_null());
+    let name: &CStr = unsafe { CStr::from_ptr(name) };
+    let name: &str = match name.to_str() {
+        Ok(s) => s,
+            Err(_) => { return nss_entry_not_available(errnop); }
+    };
+    #[cfg(debug_assertions)]
+    println!("libnss-aad initgroups_dyn called for {}", name);
+
+    let config = match AadConfig::from_file("/etc/nssaad.conf") {
+        Ok(c) => c,
+        Err(_) => { return nss_input_file_err(errnop); }
+    };
+
+    let user_groups: Vec<gid_t> = match azure::get_user_groups(&config, name) {
+        Ok(v) => v,
+        Err(err) => {
+            #[cfg(debug_assertions)]
+            println!("libnss-aad failed to get user groups: {:?}", err);
+            return nss_entry_not_available(errnop);
+        }
+    }
+    .iter()
+    .filter_map(|g| config.group_ids.get(&g.groupname))
+    .cloned()
+    .filter(|&gid| gid != skipgroup)
+    .collect();
+
+    // If we get no groups, then we have nothing to do.
+    if user_groups.is_empty() {
+        #[cfg(debug_assertions)]
+        println!("libnss-aad got no user groups for {}", name);
+        return NssStatus::Success as i32;
+    }
+
+    // How big is the array we were passed, and how deep into it are we?
+    let mut idx = unsafe { *start };
+    let mut group_arraysz = unsafe { *size };
+    #[cfg(debug_assertions)]
+    println!("libnss-aad group array size={}@idx {}, adding {}", group_arraysz, idx, user_groups.len());
+    if idx + user_groups.len() > group_arraysz {
+        // We need to add more group IDs than we currently have space for
+        let new_sz = idx + user_groups.len() + 1;
+        let new_sz = if new_sz > limit { limit } else { new_sz };
+        unsafe {
+            *groupsp = libc::realloc(*groupsp as *mut c_void, new_sz) as *mut gid_t;
+            *size = new_sz;
+            group_arraysz = new_sz;
+        }
+    }
+
+    let group_array: &mut [gid_t] = unsafe { std::slice::from_raw_parts_mut(*groupsp, group_arraysz) };
+    for gid in user_groups {
+        //let gid = config.group_ids[&user_group.groupname];
+        group_array[idx] = gid;
+        idx += 1;
+        if idx == group_array.len() {
+            break;
+        }
+    }
+
+    unsafe {
+        *start = idx;
+    }
+
+    NssStatus::Success as i32
+}
+
+
+/*
+ * nss_status_t NSS_NAME(getgrnam_r)(const char *name, struct group *result,
+ *                                   char *buffer, size_t buflen, int *errnop)
+ */
+#[no_mangle]
+pub extern fn _nss_aad_getgrnam_r(name: *const c_char, result: *mut group,
+                                  buffer: *mut c_char, buflen: size_t, errnop: *mut i32) -> i32 {
+    let name: &CStr = unsafe {assert!(!name.is_null()); CStr::from_ptr(name) };
+    let name: &str = match name.to_str() {
+        Ok(s) => s,
+        Err(_) => { return nss_entry_not_available(errnop); }
+    };
+    #[cfg(debug_assertions)]
+    println!("libnss-aad getgrnam_r called for {}", name);
+
+    let config = match AadConfig::from_file("/etc/nssaad.conf") {
+        Ok(c) => c,
+        Err(_) => { return nss_input_file_err(errnop); }
+    };
+
+    let groupinfo = match azure::get_group_info(&config, name) {
+        Ok(i) => i,
+        Err(e) => {
+            match e {
+                GraphInfoRetrievalError::BadHTTPResponse{status, ..} => {
+                    match status {
+                        StatusCode::NotFound => {
+                            #[cfg(debug_assertion)]
+                            println!("libnss-aad getgrnam could not find {}", name);
+                            return nss_entry_not_available(errnop); },
+                        _ => { return nss_out_of_service(errnop); }
+                    } },
+                GraphInfoRetrievalError::TooManyResults | GraphInfoRetrievalError::NotFound => {
+                    return nss_entry_not_available(errnop);
+                },
+                _ => { return nss_out_of_service(errnop); }
+            };
+        }
+    };
+    let groupmembers: Vec<UserInfo> = match azure::get_group_members(&config, &groupinfo.object_id) {
+            Ok(m) => m,
+            _ => vec![]
+        };
+
+    match fill_group_buf(result, config.group_ids[name], buffer, buflen, name, &groupmembers) {
+        Ok(()) => NssStatus::Success as i32,
+        Err(e) => match e {
+            BufferFillError::InsufficientBuffer => nss_insufficient_buffer(errnop),
+            _ => {
+                #[cfg(debug_assertions)]
+                println!("libnss-aad getgrnam_r failed because {:?}", e);
+                nss_entry_not_available(errnop)
+            }
+        }
+    }
+}
+
+/*
+ *  pub struct group {
+ *      pub gr_name: *mut c_char,
+ *      pub gr_passwd: *mut c_char,
+ *      pub gr_gid: gid_t,
+ *      pub gr_mem: *mut *mut c_char,
+ *  }
+ */
+
+fn fill_group_buf(grp: *mut group, gid: gid_t, buffer: *mut c_char, buflen: size_t, name: &str, members: &[UserInfo]) -> BufferFillResult<()> {
+    #[cfg(debug_assertion)]
+    println!("filling group buffer for group {} which has {} members", name, members.len());
+
+    // name and passwd are easy - we can copy them straight into the provided buffer
+    let c_name = CString::new(name)?.into_bytes_with_nul();
+    let c_gpasswd = CString::new("!")?.into_bytes_with_nul();
+
+    // members are harder - we need to provide a pointer to the base of a vector of pointers
+    // c_members is a vector of names (which are themselves vectors of bytes)
+    let c_members = members.iter().map(|m: &UserInfo| {
+        let c_member = CString::new(m.username.clone()).unwrap();
+        c_member.into_bytes_with_nul()
+    }).collect::<Vec<Vec<u8>>>();
+    let memberlen = c_members.iter().fold(0, |acc, m| acc + m.len());
+
+    // if buffer isn't long enough to hold all the names, bail accordingly
+    if buflen < c_name.len() + c_gpasswd.len() + memberlen {
+        return Err(BufferFillError::InsufficientBuffer);
+    }
+
+    // here is our vector of pointers. these will point to member names copied into the buffer,
+    // and grp.gr_mem will point at it.
+    let mut c_member_ptrs: Vec<*mut c_char> = Vec::with_capacity(c_members.len() + 1);
+
+    // Our cursor into the buffer
+    let mut buf_cur = buffer;
+
+    unsafe {
+        // First, the easy ones. Copy the name and passwd files into the buffer, setting
+        // grp member pointers accordingly.
+        copy_nonoverlapping(c_name.as_ptr(), buf_cur as *mut u8, c_name.len());
+        (*grp).gr_name = buf_cur;
+        buf_cur = buf_cur.offset(c_name.len() as isize);
+        copy_nonoverlapping(c_gpasswd.as_ptr(), buf_cur as *mut u8, c_gpasswd.len());
+        (*grp).gr_passwd = buf_cur;
+        buf_cur = buf_cur.offset(c_gpasswd.len() as isize);
+    }
+
+    // Now the harder stuff.
+
+    // for each nul-terminated vector of bytes (member name) in the vector of vectors
+    for c_member in c_members {
+        // first, copy the member name vector's bytes into the buffer
+        unsafe { copy_nonoverlapping(c_member.as_ptr(), buf_cur as *mut u8, c_member.len()); }
+        // then store the location (in the buffer) in our vector of pointers
+        c_member_ptrs.push(buf_cur);
+        // and move the cursor
+        unsafe { buf_cur = buf_cur.offset(c_member.len() as isize); }
+    }
+    // the last item in the vector of pointers should be a null pointer
+    c_member_ptrs.push(null_mut());
+
+    let c_ptr_array_sz = c_member_ptrs.len() * std::mem::size_of::<*mut c_char>();
+    unsafe {
+        // Because glibc will presumably use libc to free() the array of names, we have to use
+        // libc to malloc it, too.
+        let c_ptr_array: *mut *mut c_char = libc::malloc(c_ptr_array_sz) as *mut *mut c_char;
+        // Now, copy the pointers into the newly-allocated space
+        copy_nonoverlapping(c_member_ptrs.as_ptr(), c_ptr_array, c_member_ptrs.len());
+        // then store the location of our array
+        (*grp).gr_mem = c_ptr_array;
+        // and forget about it (to prevent deallocation)
+        //std::mem::forget(c_ptr_array); // not necessary, since c_char impl Clone?
+    }
+
+    // copy the gid value into the grp object
+    unsafe {(*grp).gr_gid = gid;}
+
+    Ok(())
+}
+
+/*
+ * nss_status_t NSS_NAME(getgrgid_r)(gid_t gid, struct group *result,
+ *                                   char *buffer, size_t buflen, int *errnop)
+ */
+#[no_mangle]
+pub extern fn _nss_aad_getgrgid_r(gid: gid_t, result: *mut group,
+                                  buffer: *mut c_char, buflen: size_t, errnop: *mut i32) -> i32 {
+
+    assert!(!result.is_null() && !buffer.is_null() && !errnop.is_null());
+
+    let config = match AadConfig::from_file("/etc/nssaad.conf") {
+        Ok(c) => c,
+        Err(_) => { return nss_input_file_err(errnop); }
+    };
+
+    let names: Vec<String> = config.group_ids.iter().filter(|&(_,&i)| gid == i).map(|(n,_)| n.to_string()).collect();
+    if names.is_empty() {
+        return nss_entry_not_available(errnop);
+    }
+    let name = &names[0];
+
+    let groupinfo = match azure::get_group_info(&config, name) {
+        Ok(i) => i,
+        Err(e) => {
+            match e {
+                GraphInfoRetrievalError::BadHTTPResponse{status, ..} => {
+                    match status {
+                        StatusCode::NotFound => {
+                            #[cfg(debug_assertion)]
+                            println!("libnss-aad getgrgid could not find {}", name);
+                            return nss_entry_not_available(errnop); },
+                        _ => { return nss_out_of_service(errnop); }
+                    } },
+                GraphInfoRetrievalError::TooManyResults | GraphInfoRetrievalError::NotFound => {
+                    return nss_entry_not_available(errnop);
+                },
+                _ => { return nss_out_of_service(errnop); }
+            };
+        }
+    };
+    let groupmembers: Vec<UserInfo> = match azure::get_group_members(&config, &groupinfo.object_id) {
+            Ok(m) => m,
+            _ => vec![]
+        };
+
+
+    match fill_group_buf(result, gid, buffer, buflen, name, &groupmembers) {
+        Ok(()) => NssStatus::Success as i32,
+        Err(e) => match e {
+            BufferFillError::InsufficientBuffer => nss_insufficient_buffer(errnop),
+            _ => {
+                #[cfg(debug_assertions)]
+                println!("libnss-aad getgrgid_r failed because {:?}", e);
+                nss_entry_not_available(errnop)
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: *mut c_char,
+                                  buflen: size_t, errnop: *mut i32) -> i32 {
 
     let name: &CStr = unsafe {assert!(!name.is_null()); CStr::from_ptr(name) };
     let name: &str = match name.to_str() {
@@ -67,7 +360,7 @@ pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: 
         Ok(i) => i,
         Err(e) => {
             match e {
-                UserInfoRetrievalError::BadHTTPResponse{status} => {
+                GraphInfoRetrievalError::BadHTTPResponse{status, ..} => {
                     match status {
                         StatusCode::NotFound => { return nss_entry_not_available(errnop); },
                             _ => { return nss_out_of_service(errnop); }
@@ -83,27 +376,27 @@ pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: 
         (*pw).pw_gid = userinfo.userid as gid_t;
     }
 
-    match fill_buffer(pw, buffer, buflen, &userinfo.username, userinfo.fullname) {
+    match fill_passwd_buf(pw, buffer, buflen, &userinfo.username, userinfo.fullname) {
         Ok(()) => NssStatus::Success as i32,
         Err(e) => match e {
-            PasswdBufferFillError::ZeroByteInString => nss_entry_not_available(errnop),
+            BufferFillError::ZeroByteInString => nss_entry_not_available(errnop),
             _ => nss_insufficient_buffer(errnop)
         }
     }
 }
 
-fn fill_buffer(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, username: &str, fullname: String) -> PasswdBufferFillResult<()> {
+fn fill_passwd_buf(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, username: &str, fullname: String) -> BufferFillResult<()> {
     if pw.is_null() || buffer.is_null() || buflen == 0 {
-        return Err(PasswdBufferFillError::NullPointerError);
+        return Err(BufferFillError::NullPointerError);
     }
     let c_name = CString::new(username)?.into_bytes_with_nul();
-    let c_passwd = CString::new("*")?.into_bytes_with_nul();
+    let c_passwd = CString::new(".")?.into_bytes_with_nul();
     let c_gecos = CString::new(fullname)?.into_bytes_with_nul();
     let c_dir = CString::new(format!("/home/{}", username))?.into_bytes_with_nul();
     let c_shell = CString::new("/bin/bash")?.into_bytes_with_nul();
 
     if buflen < c_name.len() + c_passwd.len() + c_gecos.len() + c_dir.len() + c_shell.len() {
-        return Err(PasswdBufferFillError::InsufficientBuffer);
+        return Err(BufferFillError::InsufficientBuffer);
     }
 
     let mut buf_cur = buffer;
@@ -151,35 +444,7 @@ fn nss_entry_not_available(errnop: *mut i32) -> i32 {
     NssStatus::NotFound as i32
 }
 
-fn nss_no_entries_available(errnop: *mut i32) -> i32 {
-    unsafe { *errnop = 0 };
+#[allow(dead_code)]
+fn nss_no_entries_available(_: *mut i32) -> i32 {
     NssStatus::NotFound as i32
 }
-
-
-/*
-
-// Kept in case it's useful in the future.
-
-struct MaxUidExceeded;
-
-fn get_next_uid() -> Result<u32, MaxUidExceeded> {
-    let mut uid: u32 = 1000;
-    loop {
-        unsafe {
-            let p = libc::getpwuid(uid as uid_t);
-            if p.is_null() {
-                let g = libc::getgrgid(uid as gid_t);
-                if g.is_null() {
-                    break;
-                }
-            }
-            uid += 1;
-            if uid > 65000 {
-                return Err(MaxUidExceeded);
-            }
-        }
-    }
-    Ok(uid)
-}
-*/
