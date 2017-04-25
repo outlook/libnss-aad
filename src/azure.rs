@@ -24,6 +24,7 @@ fn get_ssl_client() -> hyper::Client {
     hyper::Client::with_connector(connector)
 }
 
+/// Issue an HTTPS POST request, and return the response body text
 fn post_query(url: &str, query: &Query) -> GraphInfoResult<String> {
     let client = get_ssl_client();
     let body = form_urlencoded::Serializer::new(String::new())
@@ -38,6 +39,7 @@ fn post_query(url: &str, query: &Query) -> GraphInfoResult<String> {
     Ok(buf)
 }
 
+/// Issue an HTTPS GET request, and return the response body text.
 fn get_content(content_url: &str, headers: Option<Headers>) -> GraphInfoResult<String> {
     let client = get_ssl_client();
     let request = if let Some(h) = headers {
@@ -54,6 +56,14 @@ fn get_content(content_url: &str, headers: Option<Headers>) -> GraphInfoResult<S
     Ok(buf)
 }
 
+/// Extract the OAuth2 Bearer token from the provided JSON
+///
+/// # Example
+///
+/// ```
+/// let json: &str = "{\"access_token\": \"aaaabbbbccccdddd...\"}";
+/// assert_eq!(extract_token(json).unwrap(), "aaaabbbbccccdddd....");
+/// ```
 fn extract_token(json: &str) -> GraphInfoResult<String> {
     Ok(
         serde_json::from_str::<Value>(json)?["access_token"]
@@ -63,6 +73,10 @@ fn extract_token(json: &str) -> GraphInfoResult<String> {
         )
 }
 
+/// Gather information out of the Graph API User json object.
+///
+/// This should probably be obviated by having UserInfo derive Deserialize and using the (kind
+/// of ugly) attribute names that the Graph API uses.
 fn extract_user_info(userinfo: &Value) -> GraphInfoResult<UserInfo> {
     let user_principal_name = userinfo["userPrincipalName"]
         .as_str()
@@ -88,6 +102,10 @@ fn extract_user_info(userinfo: &Value) -> GraphInfoResult<UserInfo> {
     })
 }
 
+/// Gather information out of the Graph API Group json object.
+///
+/// This should probably be obviated by having GroupInfo derive Deserialize and using the (kind
+/// of ugly) attribute names that the Graph API uses.
 fn extract_group_info(group: &Value) -> GraphInfoResult<GroupInfo> {
     let group_name = group["displayName"]
         .as_str()
@@ -105,6 +123,7 @@ fn extract_group_info(group: &Value) -> GraphInfoResult<GroupInfo> {
     })
 }
 
+/// Collects and returns UserInfo objects created from the raw results of a Graph API call.
 fn extract_group_members(json: &str) -> GraphInfoResult<Vec<UserInfo>> {
     let values = &serde_json::from_str::<Value>(json)?["value"];
     let members = values
@@ -119,6 +138,7 @@ fn extract_group_members(json: &str) -> GraphInfoResult<Vec<UserInfo>> {
     Ok(members)
 }
 
+/// Collects and returns GroupInfo objects created from the raw results of a Graph API call.
 fn extract_user_groups(json: &str) -> GraphInfoResult<Vec<GroupInfo>> {
     let values = &serde_json::from_str::<Value>(json)?["value"];
     if values.is_null() {
@@ -136,6 +156,7 @@ fn extract_user_groups(json: &str) -> GraphInfoResult<Vec<GroupInfo>> {
     Ok(groups)
 }
 
+/// Extracts and returns the PageToken from a paged response.
 fn has_another_page(json: &str) -> GraphInfoResult<Option<String>> {
     let link = &serde_json::from_str::<Value>(json)?["odata.nextLink"];
     if link.is_null() {
@@ -144,6 +165,7 @@ fn has_another_page(json: &str) -> GraphInfoResult<Option<String>> {
     Ok(Some(link.as_str().ok_or(GraphInfoRetrievalError::BadJSONResponse)?.to_string()))
 }
 
+/// Fetch a UserInfo object for the named user
 pub fn get_user_info(config: &AadConfig, username: &str) -> GraphInfoResult<UserInfo> {
     let query_url = &format!(
         "https://graph.windows.net/{}/users/{}?api-version=1.6",
@@ -154,6 +176,7 @@ pub fn get_user_info(config: &AadConfig, username: &str) -> GraphInfoResult<User
     extract_user_info(user_info)
 }
 
+/// Fetch a GroupInfo object for the named group
 pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<GroupInfo> {
     let group_info_json = get_graph_info(
         config,
@@ -175,6 +198,8 @@ pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<Gr
     extract_group_info(&group_values[0])
 }
 
+/// Return a vector of UserInfo objects representing the members of the group identified by the
+/// supplied group's object ID
 pub fn get_group_members(config: &AadConfig, object_id: &str) -> GraphInfoResult<Vec<UserInfo>> {
     let group_members_json = get_graph_info(
         config,
@@ -186,6 +211,7 @@ pub fn get_group_members(config: &AadConfig, object_id: &str) -> GraphInfoResult
     extract_group_members(&group_members_json)
 }
 
+/// Return a vector of GroupInfo objects representing the groups to which the named user belongs
 pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Vec<GroupInfo>> {
     let mut url = format!(
         "https://graph.windows.net/{}/users/{}/memberOf?api-version=1.6",
@@ -222,6 +248,11 @@ pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Ve
     Ok(user_groups)
 }
 
+/// Fetch the text of the HTTP response at `query_url`
+///
+/// Using the client credentials in the `config` argument, obtain an OAuth2 Bearer token from
+/// the OAuth2 endpoint. Using that token, make a request for `query_url`, and return whatever
+/// text is in the response body.
 fn get_graph_info(config: &AadConfig, query_url: &str) -> GraphInfoResult<String> {
     let auth_url = format!("https://login.microsoftonline.com/{}/oauth2/token?api-version=1.0",
                            config.tenant);

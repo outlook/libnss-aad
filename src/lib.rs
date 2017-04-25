@@ -1,3 +1,8 @@
+//! libnss-aad is a glibc NSS plugin that queries Azure Active Directory for information
+//!
+//! The public functions in this library do not form a comprehensive implementation of an
+//! NSS plugin, but only provide the minimum necessary for the author's use cases.
+
 extern crate core;
 extern crate libc;
 
@@ -21,6 +26,8 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::ptr::copy_nonoverlapping;
 
+/// NssStatus is the return value from libnss-called functions; they are cast to i32 when being
+/// returned.
 enum NssStatus {
     TryAgain = -2,
     Unavailable,
@@ -38,6 +45,7 @@ pub struct AadConfig {
 }
 
 impl AadConfig {
+    /// Helper function to initialize an AadConfig from the named file.
     fn from_file(filename: &str) -> serde_yaml::Result<AadConfig> {
         let mut file = File::open(filename)?;
         let mut contents = String::new();
@@ -60,16 +68,19 @@ pub struct GroupInfo {
     object_id: String
 }
 
-/*
- *  name      IN     - the user name to find groups for
- *  skipgroup IN     - a group to not include in the list
- *  *start    IN/OUT - where to write in the array, is incremented
- *  *size     IN/OUT - the size of the supplied array (gid_t entries, not bytes)
- *  **groupsp IN/OUT - pointer to the array of returned groupids
- *  limit     IN     - the maxium size of the array
- *  *errnop   OUT    - for returning errno
- */
-
+/// The initgroups_dyn function populates a list of GIDs to which the named user belongs.
+///
+/// This function is very sparsely documented, and does not appear to be part of the typical
+/// set of expected functions implemented by a libnss plugin. I do not know why. The following
+/// argument descriptions come from the libnss-ldap package:
+///
+///   name      IN     - the user name to find groups for
+///   skipgroup IN     - a group to not include in the list
+///   *start    IN/OUT - where to write in the array, is incremented
+///   *size     IN/OUT - the size of the supplied array (gid_t entries, not bytes)
+///   **groupsp IN/OUT - pointer to the array of returned groupids
+///   limit     IN     - the maxium size of the array
+///   *errnop   OUT    - for returning errno
 #[no_mangle]
 pub extern fn _nss_aad_initgroups_dyn(name: *const c_char, skipgroup: gid_t,
                                       start: *mut size_t, size: *mut size_t,
@@ -89,6 +100,8 @@ pub extern fn _nss_aad_initgroups_dyn(name: *const c_char, skipgroup: gid_t,
         Err(_) => { return nss_input_file_err(errnop); }
     };
 
+    // Get the user's groups, keeping the GIDs of only those groups appearing in the config file,
+    // and that are not equal to `skipgroup`.
     let user_groups: Vec<gid_t> = match azure::get_user_groups(&config, name) {
         Ok(v) => v,
         Err(err) => {
@@ -126,28 +139,35 @@ pub extern fn _nss_aad_initgroups_dyn(name: *const c_char, skipgroup: gid_t,
         }
     }
 
+    // Now that we've got the memory we need, build a raw slice into which we can copy values out
+    // of the Rust user_groups Vec.
     let group_array: &mut [gid_t] = unsafe { std::slice::from_raw_parts_mut(*groupsp, group_arraysz) };
+
     for gid in user_groups {
-        //let gid = config.group_ids[&user_group.groupname];
+        // Copy the GID into the raw slice
         group_array[idx] = gid;
+        // keeping track of the index (which must be returned to the caller)
         idx += 1;
-        if idx == group_array.len() {
+        if idx == group_array.len() { // if we run out of space, bail
             break;
         }
     }
 
     unsafe {
-        *start = idx;
+        *start = idx; // Lets future users of this memory know where free space begins
     }
 
     NssStatus::Success as i32
 }
 
 
-/*
- * nss_status_t NSS_NAME(getgrnam_r)(const char *name, struct group *result,
- *                                   char *buffer, size_t buflen, int *errnop)
- */
+/// The `getgrnam` function retrieves group information about the named group
+///
+/// The `result` argument is a pointer to an already-allocated C struct group, which consists
+/// of member pointers. The information that is looked up is stored in `buffer`, and `result`'s
+/// pointers point into the buffer.
+///
+/// The group's GID is looked up in the configuration.
 #[no_mangle]
 pub extern fn _nss_aad_getgrnam_r(name: *const c_char, result: *mut group,
                                   buffer: *mut c_char, buflen: size_t, errnop: *mut i32) -> i32 {
@@ -164,6 +184,7 @@ pub extern fn _nss_aad_getgrnam_r(name: *const c_char, result: *mut group,
         Err(_) => { return nss_input_file_err(errnop); }
     };
 
+    // Get the attributes of the group. Specifically we need its object ID.
     let groupinfo = match azure::get_group_info(&config, name) {
         Ok(i) => i,
         Err(e) => {
@@ -183,10 +204,12 @@ pub extern fn _nss_aad_getgrnam_r(name: *const c_char, result: *mut group,
             };
         }
     };
+
+    // Look up members of the group, using the group's object ID
     let groupmembers: Vec<UserInfo> = match azure::get_group_members(&config, &groupinfo.object_id) {
-            Ok(m) => m,
-            _ => vec![]
-        };
+        Ok(m) => m,
+        _ => vec![]
+    };
 
     match fill_group_buf(result, config.group_ids[name], buffer, buflen, name, &groupmembers) {
         Ok(()) => NssStatus::Success as i32,
@@ -201,15 +224,16 @@ pub extern fn _nss_aad_getgrnam_r(name: *const c_char, result: *mut group,
     }
 }
 
-/*
- *  pub struct group {
- *      pub gr_name: *mut c_char,
- *      pub gr_passwd: *mut c_char,
- *      pub gr_gid: gid_t,
- *      pub gr_mem: *mut *mut c_char,
- *  }
- */
-
+/// This function accepts Rust structures and copies their contents into the buffer provided to
+/// store the contents of the provided C struct group.
+///
+/// This function does no allocation/reallocation. If there is not enough buffer space to store
+/// everything, the function returns and relies upon the NSS caller to reallocate.
+///
+/// This function _does not_ expose any Rust structures to C, but instead performs bytewise
+/// nonoverlapping copies into `buffer`.
+///
+/// Modifies `grp` and `buffer`.
 fn fill_group_buf(grp: *mut group, gid: gid_t, buffer: *mut c_char, buflen: size_t, name: &str, members: &[UserInfo]) -> BufferFillResult<()> {
     #[cfg(debug_assertion)]
     println!("filling group buffer for group {} which has {} members", name, members.len());
@@ -282,10 +306,14 @@ fn fill_group_buf(grp: *mut group, gid: gid_t, buffer: *mut c_char, buflen: size
     Ok(())
 }
 
-/*
- * nss_status_t NSS_NAME(getgrgid_r)(gid_t gid, struct group *result,
- *                                   char *buffer, size_t buflen, int *errnop)
- */
+/// getgrgid returns information about the group identified by the provided GID
+///
+/// The `result` argument is a pointer to an already-allocated C struct group, which contains
+/// of member pointers. The information that is looked up is stored in `buffer`, and `result`'s
+/// pointers point into the buffer.
+///
+/// The group name is looked up in the configuration. The first matching result is returned (that
+/// is, duplicated GIDs are ignored).
 #[no_mangle]
 pub extern fn _nss_aad_getgrgid_r(gid: gid_t, result: *mut group,
                                   buffer: *mut c_char, buflen: size_t, errnop: *mut i32) -> i32 {
@@ -297,12 +325,17 @@ pub extern fn _nss_aad_getgrgid_r(gid: gid_t, result: *mut group,
         Err(_) => { return nss_input_file_err(errnop); }
     };
 
+    // Iterate through the `group_ids` HashMap, collecting any keys that have a value matching the
+    // provided GID.
     let names: Vec<String> = config.group_ids.iter().filter(|&(_,&i)| gid == i).map(|(n,_)| n.to_string()).collect();
     if names.is_empty() {
+        // No keys have a matching value.
         return nss_entry_not_available(errnop);
     }
+    // Use the first result.
     let name = &names[0];
 
+    // Get the attributes of the group. Specifically we need its object ID.
     let groupinfo = match azure::get_group_info(&config, name) {
         Ok(i) => i,
         Err(e) => {
@@ -322,11 +355,12 @@ pub extern fn _nss_aad_getgrgid_r(gid: gid_t, result: *mut group,
             };
         }
     };
-    let groupmembers: Vec<UserInfo> = match azure::get_group_members(&config, &groupinfo.object_id) {
-            Ok(m) => m,
-            _ => vec![]
-        };
 
+    // Look up members of the group, using the group's object ID
+    let groupmembers: Vec<UserInfo> = match azure::get_group_members(&config, &groupinfo.object_id) {
+        Ok(m) => m,
+        _ => vec![]
+    };
 
     match fill_group_buf(result, gid, buffer, buflen, name, &groupmembers) {
         Ok(()) => NssStatus::Success as i32,
@@ -341,6 +375,12 @@ pub extern fn _nss_aad_getgrgid_r(gid: gid_t, result: *mut group,
     }
 }
 
+
+/// getpwnam returns information about the named user
+///
+/// The `pw` argument is a pointer to an already-allocated C struct passwd, which contains
+/// of member pointers. The information that is looked up is stored in `buffer`, and `pw`'s
+/// pointers point into the buffer.
 #[no_mangle]
 pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: *mut c_char,
                                   buflen: size_t, errnop: *mut i32) -> i32 {
@@ -385,6 +425,20 @@ pub extern fn _nss_aad_getpwnam_r(name: *const c_char, pw: *mut passwd, buffer: 
     }
 }
 
+
+/// This function accepts Rust structures and copies their contents into the buffer provided to
+/// store the contents of the provided C struct passwd.
+///
+/// This function does no allocation/reallocation. If there is not enough buffer space to store
+/// everything, the function returns and relies upon the NSS caller to reallocate.
+///
+/// This function _does not_ expose any Rust structures to C, but instead performs bytewise
+/// nonoverlapping copies into `buffer`.
+///
+/// Modifies `pw` and `buffer`.
+///
+/// This arbitrarily sets the password field of the `pw` struct to `.` because OpenSSH interprets
+/// `*` as indicating a locked account.
 fn fill_passwd_buf(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, username: &str, fullname: String) -> BufferFillResult<()> {
     if pw.is_null() || buffer.is_null() || buflen == 0 {
         return Err(BufferFillError::NullPointerError);
@@ -424,27 +478,34 @@ fn fill_passwd_buf(pw: *mut passwd, buffer: *mut c_char, buflen: size_t, usernam
     Ok(())
 }
 
+/// One of the functions used ran temporarily out of resources or a service is currently not
+/// available.
 fn nss_out_of_service(errnop: *mut i32) -> i32 {
     unsafe { *errnop = EAGAIN };
     NssStatus::TryAgain as i32
 }
 
+/// The provided buffer is not large enough. The function should be called again with a larger
+/// buffer.
 fn nss_insufficient_buffer(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ERANGE };
     NssStatus::TryAgain as i32
 }
 
+/// A necessary input file cannot be found.
 fn nss_input_file_err(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ENOENT };
     NssStatus::Unavailable as i32
 }
 
+/// The requested entry is not available.
 fn nss_entry_not_available(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ENOENT };
     NssStatus::NotFound as i32
 }
 
-#[allow(dead_code)]
+/// There are no entries. Use this to avoid returning errors for inactive services which may be
+/// enabled at a later time. This is not the same as the service being temporarily unavailable.
 fn nss_no_entries_available(_: *mut i32) -> i32 {
     NssStatus::NotFound as i32
 }
