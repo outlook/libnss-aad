@@ -34,7 +34,10 @@ fn post_query(url: &str, query: &Query) -> GraphInfoResult<String> {
     let mut buf = String::new();
     response.read_to_string(&mut buf)?;
     if response.status != hyper::status::StatusCode::Ok {
-        return Err(GraphInfoRetrievalError::BadHTTPResponse{ status: response.status, data: buf });
+        return Err(GraphInfoRetrievalError::BadHTTPResponse {
+                       status: response.status,
+                       data: buf,
+                   });
     }
     Ok(buf)
 }
@@ -51,7 +54,10 @@ fn get_content(content_url: &str, headers: Option<Headers>) -> GraphInfoResult<S
     let mut buf = String::new();
     response.read_to_string(&mut buf)?;
     if response.status != hyper::status::StatusCode::Ok {
-        return Err(GraphInfoRetrievalError::BadHTTPResponse{ status: response.status, data: buf });
+        return Err(GraphInfoRetrievalError::BadHTTPResponse {
+                       status: response.status,
+                       data: buf,
+                   });
     }
     Ok(buf)
 }
@@ -65,12 +71,10 @@ fn get_content(content_url: &str, headers: Option<Headers>) -> GraphInfoResult<S
 /// assert_eq!(extract_token(json).unwrap(), "aaaabbbbccccdddd....");
 /// ```
 fn extract_token(json: &str) -> GraphInfoResult<String> {
-    Ok(
-        serde_json::from_str::<Value>(json)?["access_token"]
-        .as_str()
-        .ok_or(GraphInfoRetrievalError::NoAccessToken{response: json.to_string()})?
-        .to_string()
-        )
+    Ok(serde_json::from_str::<Value>(json)?["access_token"]
+           .as_str()
+           .ok_or(GraphInfoRetrievalError::NoAccessToken { response: json.to_string() })?
+           .to_string())
 }
 
 /// Gather information out of the Graph API User json object.
@@ -96,10 +100,10 @@ fn extract_user_info(userinfo: &Value) -> GraphInfoResult<UserInfo> {
     }
 
     Ok(UserInfo {
-        username: user_principal_name,
-        fullname: user_display_name,
-        userid: user_id
-    })
+           username: user_principal_name,
+           fullname: user_display_name,
+           userid: user_id,
+       })
 }
 
 /// Gather information out of the Graph API Group json object.
@@ -118,9 +122,9 @@ fn extract_group_info(group: &Value) -> GraphInfoResult<GroupInfo> {
     // we punt the question of a GID
 
     Ok(GroupInfo {
-        groupname: group_name,
-        object_id: object_id
-    })
+           groupname: group_name,
+           object_id: object_id,
+       })
 }
 
 /// Collects and returns UserInfo objects created from the raw results of a Graph API call.
@@ -149,10 +153,10 @@ fn extract_user_groups(json: &str) -> GraphInfoResult<Vec<GroupInfo>> {
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
         .into_iter()
         .filter_map(|v| match extract_group_info(v) {
-            Ok(g) => Some(g),
-            Err(_) => None
-        })
-    .collect::<Vec<GroupInfo>>();
+                        Ok(g) => Some(g),
+                        Err(_) => None,
+                    })
+        .collect::<Vec<GroupInfo>>();
     Ok(groups)
 }
 
@@ -162,15 +166,16 @@ fn has_another_page(json: &str) -> GraphInfoResult<Option<String>> {
     if link.is_null() {
         return Ok(None);
     }
-    Ok(Some(link.as_str().ok_or(GraphInfoRetrievalError::BadJSONResponse)?.to_string()))
+    Ok(Some(link.as_str()
+                .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
+                .to_string()))
 }
 
 /// Fetch a UserInfo object for the named user
 pub fn get_user_info(config: &AadConfig, username: &str) -> GraphInfoResult<UserInfo> {
-    let query_url = &format!(
-        "https://graph.windows.net/{}/users/{}?api-version=1.6",
-        config.tenant,
-        username);
+    let query_url = &format!("https://graph.windows.net/{}/users/{}?api-version=1.6",
+                             config.tenant,
+                             username);
     let info_json = get_graph_info(config, query_url)?;
     let user_info = &serde_json::from_str::<Value>(&info_json)?;
     extract_user_info(user_info)
@@ -178,12 +183,10 @@ pub fn get_user_info(config: &AadConfig, username: &str) -> GraphInfoResult<User
 
 /// Fetch a GroupInfo object for the named group
 pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<GroupInfo> {
-    let group_info_json = get_graph_info(
-        config,
-        &format!(
-            "https://graph.windows.net/{}/groups/?api-version=1.6&$filter=displayName+eq+'{}'",
-            config.tenant,
-            groupname))?;
+    let group_info_json = get_graph_info(config,
+                                         &format!("https://graph.windows.net/{}/groups/?api-version=1.6&$filter=displayName+eq+'{}'",
+                                                  config.tenant,
+                                                  groupname))?;
 
     let group_results = serde_json::from_str::<Value>(&group_info_json)?;
     let group_values = group_results["value"]
@@ -201,49 +204,54 @@ pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<Gr
 /// Return a vector of UserInfo objects representing the members of the group identified by the
 /// supplied group's object ID
 pub fn get_group_members(config: &AadConfig, object_id: &str) -> GraphInfoResult<Vec<UserInfo>> {
-    let group_members_json = get_graph_info(
-        config,
-        &format!(
-            "https://graph.windows.net/{}/groups/{}/members?api-version=1.6",
-            config.tenant,
-            object_id
-            ))?;
+    let group_members_json = get_graph_info(config,
+                                            &format!("https://graph.windows.net/{}/groups/{}/members?api-version=1.6",
+                                                     config.tenant,
+                                                     object_id))?;
     extract_group_members(&group_members_json)
 }
 
 /// Return a vector of GroupInfo objects representing the groups to which the named user belongs
 pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Vec<GroupInfo>> {
-    let mut url = format!(
-        "https://graph.windows.net/{}/users/{}/memberOf?api-version=1.6",
-        config.tenant,
-        username
-        );
+    let mut url = format!("https://graph.windows.net/{}/users/{}/memberOf?api-version=1.6",
+                          config.tenant,
+                          username);
     let mut user_groups = vec![];
     let mut retries = 5;
     loop {
         #[cfg(debug_assertions)]
-        println!("libnss-aad::azure getting a batch of groups for {}", username);
+        println!("libnss-aad::azure getting a batch of groups for {}",
+                 username);
         let user_groups_json = match get_graph_info(config, &url) {
             Ok(j) => j,
-            Err(e) => match e {
-                GraphInfoRetrievalError::BadHTTPResponse{status, data} => {
-                    if data.contains("Directory_ExpiredPageToken") && retries > 0 {
+            Err(e) => {
+                match e {
+                    GraphInfoRetrievalError::BadHTTPResponse { status, data } => {
+                        if data.contains("Directory_ExpiredPageToken") && retries > 0 {
                         #[cfg(debug_assertions)]
-                        println!("libnss-aad::azure got an ExpiredPageToken; retrying");
-                        retries -= 1;
-                        continue; // no kidding, this is the recommended approach.
+                            println!("libnss-aad::azure got an ExpiredPageToken; retrying");
+                            retries -= 1;
+                            continue; // no kidding, this is the recommended approach.
+                        }
+                        return Err(GraphInfoRetrievalError::BadHTTPResponse { status, data });
                     }
-                    return Err(GraphInfoRetrievalError::BadHTTPResponse{status, data});
-                },
-                _ => { return Err(e); } }
+                    _ => {
+                        return Err(e);
+                    }
+                }
+            }
         };
         let mut group_batch = extract_user_groups(&user_groups_json)?;
         user_groups.append(&mut group_batch);
         let link = match has_another_page(&user_groups_json)? {
             Some(link) => link,
-            None => { break; }
+            None => {
+                break;
+            }
         };
-        url = format!("https://graph.windows.net/{}/{}&api-version=1.6", config.tenant, link);
+        url = format!("https://graph.windows.net/{}/{}&api-version=1.6",
+                      config.tenant,
+                      link);
     }
     Ok(user_groups)
 }
@@ -256,11 +264,10 @@ pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Ve
 fn get_graph_info(config: &AadConfig, query_url: &str) -> GraphInfoResult<String> {
     let auth_url = format!("https://login.microsoftonline.com/{}/oauth2/token?api-version=1.0",
                            config.tenant);
-    let auth_params = vec![
-        ("resource", "https://graph.windows.net/"),
-        ("grant_type", "client_credentials"),
-        ("client_id", &config.client_id),
-        ("client_secret", &config.client_secret)];
+    let auth_params = vec![("resource", "https://graph.windows.net/"),
+                           ("grant_type", "client_credentials"),
+                           ("client_id", &config.client_id),
+                           ("client_secret", &config.client_secret)];
     let token_json = post_query(&auth_url, &auth_params)?;
 
     let token = extract_token(&token_json)?;

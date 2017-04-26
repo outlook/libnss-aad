@@ -11,7 +11,7 @@ pub type BufferFillResult<T> = Result<T, BufferFillError>;
 pub enum BufferFillError {
     InsufficientBuffer,
     NullPointerError,
-    ZeroByteInString
+    ZeroByteInString,
 }
 
 impl From<std::ffi::NulError> for BufferFillError {
@@ -25,12 +25,15 @@ pub type GraphInfoResult<T> = Result<T, GraphInfoRetrievalError>;
 #[derive(Debug)]
 pub enum GraphInfoRetrievalError {
     NoAccessToken { response: String },
-    BadHTTPResponse { status: hyper::status::StatusCode, data: String },
+    BadHTTPResponse {
+        status: hyper::status::StatusCode,
+        data: String,
+    },
     BadJSONResponse,
     HTTPError(hyper::error::Error),
     UnusableImmutableID,
     TooManyResults,
-    NotFound
+    NotFound,
 }
 
 impl From<serde_json::Error> for GraphInfoRetrievalError {
@@ -47,7 +50,7 @@ impl From<hyper::error::Error> for GraphInfoRetrievalError {
 
 impl From<std::io::Error> for GraphInfoRetrievalError {
     fn from(err: std::io::Error) -> GraphInfoRetrievalError {
-        GraphInfoRetrievalError::HTTPError(hyper::error::Error::Io(err))  // heh.
+        GraphInfoRetrievalError::HTTPError(hyper::error::Error::Io(err)) // heh.
     }
 }
 
