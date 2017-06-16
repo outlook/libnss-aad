@@ -90,12 +90,14 @@ fn extract_user_info(userinfo: &Value) -> GraphInfoResult<UserInfo> {
         .as_str()
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
         .to_string();
-    let user_id = userinfo["immutableId"]
+    // was immutableId
+    let mut sid_parts : Vec<&str> = userinfo["onPremisesSecurityIdentifier"]
         .as_str()
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
-        .to_string()
-        .parse::<u32>()?;
-    if user_id == 0 {
+        .split('-').collect();
+    let user_id = sid_parts.pop().unwrap().parse::<u32>()?;
+    // rid < 1000 should only be built-in users
+    if user_id < 1000 {
         return Err(GraphInfoRetrievalError::UnusableImmutableID);
     }
 
