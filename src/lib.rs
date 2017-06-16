@@ -66,6 +66,7 @@ pub struct UserInfo {
 pub struct GroupInfo {
     groupname: String,
     object_id: String,
+    group_id: u32
 }
 
 /// The initgroups_dyn function populates a list of GIDs to which the named user belongs.
@@ -238,7 +239,7 @@ pub extern "C" fn _nss_aad_getgrnam_r(name: *const c_char,
     };
 
     match fill_group_buf(result,
-                         config.group_ids[name],
+                         groupinfo.group_id as gid_t,
                          buffer,
                          buflen,
                          name,

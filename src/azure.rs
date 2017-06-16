@@ -121,11 +121,20 @@ fn extract_group_info(group: &Value) -> GraphInfoResult<GroupInfo> {
         .as_str()
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
         .to_string();
-    // we punt the question of a GID
+    let mut sid_parts : Vec<&str> = group["onPremisesSecurityIdentifier"]
+        .as_str()
+        .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
+        .split('-').collect();
+    let group_id = sid_parts.pop().unwrap().parse::<u32>()?;
+    // rid < 1000 should only be built-in groups
+    if group_id < 1000 {
+        return Err(GraphInfoRetrievalError::UnusableImmutableID);
+    }
 
     Ok(GroupInfo {
            groupname: group_name,
            object_id: object_id,
+           group_id: group_id,
        })
 }
 
