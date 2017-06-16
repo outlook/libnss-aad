@@ -39,6 +39,7 @@ enum NssStatus {
 pub struct AadConfig {
     client_id: String,
     client_secret: String,
+    default_user_group_id: u32,
     tenant: String,
     group_ids: HashMap<String, gid_t>,
 }
@@ -494,7 +495,7 @@ pub extern "C" fn _nss_aad_getpwnam_r(name: *const c_char,
 
     unsafe {
         (*pw).pw_uid = userinfo.userid as uid_t;
-        (*pw).pw_gid = userinfo.userid as gid_t;
+        (*pw).pw_gid = config.default_user_group_id as gid_t;
     }
 
     match fill_passwd_buf(pw, buffer, buflen, &userinfo.username, userinfo.fullname) {
