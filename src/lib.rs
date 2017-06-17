@@ -379,6 +379,10 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
 
     assert!(!result.is_null() && !buffer.is_null() && !errnop.is_null());
 
+    if gid < 1000 {
+        return nss_entry_not_available(errnop);
+    }
+
     #[cfg(debug_assertions)]
     println!("libnss-aad getgrgid_r called for {}", gid);
 
@@ -452,6 +456,10 @@ pub extern "C" fn _nss_aad_getpwuid_r(uid: uid_t,
                                       -> i32 {
 
     assert!(!pw.is_null() && !buffer.is_null() && !errnop.is_null());
+
+    if uid < 1000 {
+        return nss_entry_not_available(errnop);
+    }
 
     #[cfg(debug_assertions)]
     println!("libnss-aad getpwuid_r called for {}", uid);
