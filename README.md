@@ -44,16 +44,12 @@ client_id: "..."
 client_secret: "..."
 tenant: "..."
 default_user_group_id: ###
-group_ids:
-  ...: ###
-  ...
 ```
 
 * `client_id`: is the Application ID of the [AAD Application](https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-integrating-applications) that you have created, and to which you have granted it [the necessary permissions](https://msdn.microsoft.com/en-us/library/azure/ad/graph/howto/azure-ad-graph-api-permission-scopes) (namely, `Directory.Read.All`, or a combination of `User.ReadBasic.All` and `Group.Read.All`) to query data from the Graph API.
 * `client_secret`: is a key that the client can use to obtain an [OAuth2 bearer token](https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-protocols-oauth-code).
 * `tenant`: is your [Azure AD tenant](https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-howto-tenant) name, or its GUID.
 * `default_user_group_id`: is the gid that users will have by default.
-* `group_ids`: This library does not (yet) make allowances for storing GIDs in AAD. As a workaround, you must specify GIDs within the config file. The config expects a dict named `group_ids` that maps group names to GIDs:
 
 ### NSS Configuration ###
 Add the `aad` service to the `/etc/nsswitch.conf` file. Probably something like:

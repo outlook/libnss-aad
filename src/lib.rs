@@ -20,7 +20,6 @@ use error::{GraphInfoRetrievalError, BufferFillError, BufferFillResult};
 use hyper::status::StatusCode;
 use libc::{c_void, c_char, uid_t, gid_t, size_t, passwd, group};
 use libc::{ENOENT, EAGAIN, ERANGE};
-use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::prelude::*;
@@ -41,8 +40,7 @@ pub struct AadConfig {
     client_secret: String,
     domain_sid: String,
     default_user_group_id: u32,
-    tenant: String,
-    group_ids: HashMap<String, gid_t>,
+    tenant: String
 }
 
 impl AadConfig {
@@ -113,7 +111,8 @@ pub extern "C" fn _nss_aad_initgroups_dyn(name: *const c_char,
 
     // Get the user's groups, keeping the GIDs of only those groups appearing in the config file,
     // and that are not equal to `skipgroup`.
-    let user_groups: Vec<gid_t> = match azure::get_user_groups(&config, name) {
+    #[allow(unused_variables)]
+    let mut user_groups: Vec<gid_t> = match azure::get_user_groups(&config, name) {
             Ok(v) => v,
             Err(err) => {
                 #[cfg(debug_assertions)]
@@ -122,8 +121,7 @@ pub extern "C" fn _nss_aad_initgroups_dyn(name: *const c_char,
             }
         }
         .iter()
-        .filter_map(|g| config.group_ids.get(&g.groupname))
-        .cloned()
+        .map(|g| g.group_id)
         .filter(|&gid| gid != skipgroup)
         .collect();
 
@@ -132,6 +130,8 @@ pub extern "C" fn _nss_aad_initgroups_dyn(name: *const c_char,
         #[cfg(debug_assertions)]
         println!("libnss-aad got no user groups for {}", name);
         return NssStatus::Success as i32;
+    } else {
+        user_groups.push(config.default_user_group_id);
     }
 
     // How big is the array we were passed, and how deep into it are we?
