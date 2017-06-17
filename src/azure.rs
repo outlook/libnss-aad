@@ -278,6 +278,9 @@ pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Ve
             Err(e) => {
                 match e {
                     GraphInfoRetrievalError::BadHTTPResponse { status, data } => {
+                        if status == hyper::status::StatusCode::NotFound {
+                            return Ok(vec![]);
+                        }
                         if data.contains("Directory_ExpiredPageToken") && retries > 0 {
                         #[cfg(debug_assertions)]
                             println!("libnss-aad::azure got an ExpiredPageToken; retrying");
