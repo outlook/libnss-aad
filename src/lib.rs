@@ -116,7 +116,7 @@ pub extern "C" fn _nss_aad_initgroups_dyn(name: *const c_char,
     let user_groups: Vec<gid_t> = match azure::get_user_groups(&config, name) {
             Ok(v) => v,
             Err(err) => {
-            #[cfg(debug_assertions)]
+                #[cfg(debug_assertions)]
                 println!("libnss-aad failed to get user groups: {:?}", err);
                 return nss_entry_not_available(errnop);
             }
@@ -255,7 +255,7 @@ pub extern "C" fn _nss_aad_getgrnam_r(name: *const c_char,
             match e {
                 BufferFillError::InsufficientBuffer => nss_insufficient_buffer(errnop),
                 _ => {
-                #[cfg(debug_assertions)]
+                    #[cfg(debug_assertions)]
                     println!("libnss-aad getgrnam_r failed because {:?}", e);
                     nss_entry_not_available(errnop)
                 }
@@ -537,7 +537,7 @@ pub extern "C" fn _nss_aad_getpwnam_r(name: *const c_char,
             return nss_entry_not_available(errnop);
         }
     };
-    
+
     #[cfg(debug_assertions)]
     println!("libnss-aad getpwnam_r called for {}", name);
 

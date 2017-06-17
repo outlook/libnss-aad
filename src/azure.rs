@@ -282,7 +282,7 @@ pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Ve
                             return Ok(vec![]);
                         }
                         if data.contains("Directory_ExpiredPageToken") && retries > 0 {
-                        #[cfg(debug_assertions)]
+                            #[cfg(debug_assertions)]
                             println!("libnss-aad::azure got an ExpiredPageToken; retrying");
                             retries -= 1;
                             continue; // no kidding, this is the recommended approach.
