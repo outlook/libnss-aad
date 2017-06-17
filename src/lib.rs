@@ -92,7 +92,9 @@ pub extern "C" fn _nss_aad_initgroups_dyn(name: *const c_char,
                                           limit: size_t,
                                           errnop: *mut i32)
                                           -> i32 {
+
     assert!(!groupsp.is_null() && !name.is_null() && !start.is_null() && !size.is_null());
+
     let name = match unsafe { CStr::from_ptr(name) }.to_str() {
         Ok(s) => s,
         Err(_) => {
@@ -188,6 +190,9 @@ pub extern "C" fn _nss_aad_getgrnam_r(name: *const c_char,
                                       buflen: size_t,
                                       errnop: *mut i32)
                                       -> i32 {
+
+    assert!(!result.is_null() && !buffer.is_null() && !errnop.is_null());
+
     let name = match unsafe { CStr::from_ptr(name) }.to_str() {
         Ok(s) => s,
         Err(_) => {
@@ -374,6 +379,9 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
 
     assert!(!result.is_null() && !buffer.is_null() && !errnop.is_null());
 
+    #[cfg(debug_assertions)]
+    println!("libnss-aad getgrgid_r called for {}", gid);
+
     let config = match AadConfig::from_file("/etc/nssaad.conf") {
         Ok(c) => c,
         Err(_) => {
@@ -443,6 +451,11 @@ pub extern "C" fn _nss_aad_getpwuid_r(uid: uid_t,
                                       errnop: *mut i32)
                                       -> i32 {
 
+    assert!(!pw.is_null() && !buffer.is_null() && !errnop.is_null());
+
+    #[cfg(debug_assertions)]
+    println!("libnss-aad getpwuid_r called for {}", uid);
+
     let config = match AadConfig::from_file("/etc/nssaad.conf") {
         Ok(c) => c,
         Err(_) => {
@@ -508,12 +521,17 @@ pub extern "C" fn _nss_aad_getpwnam_r(name: *const c_char,
                                       errnop: *mut i32)
                                       -> i32 {
 
+    assert!(!pw.is_null() && !buffer.is_null() && !errnop.is_null());
+
     let name = match unsafe { CStr::from_ptr(name) }.to_str() {
         Ok(s) => s,
         Err(_) => {
             return nss_entry_not_available(errnop);
         }
     };
+    
+    #[cfg(debug_assertions)]
+    println!("libnss-aad getpwnam_r called for {}", name);
 
     let config = match AadConfig::from_file("/etc/nssaad.conf") {
         Ok(c) => c,
