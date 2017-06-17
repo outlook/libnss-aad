@@ -384,7 +384,7 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
     let sid = format!("{}-{}", config.domain_sid, gid);
 
     // Get the attributes of the group. Specifically we need its object ID.
-    let groupinfo = match azure::get_group_info_by_sid(&config, sid.as_str()) {
+    let groupinfo = match azure::get_group_info_by_sid(&config, &sid) {
         Ok(i) => i,
         Err(e) => {
             match e {
@@ -418,7 +418,7 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
         _ => vec![],
     };
 
-    match fill_group_buf(result, gid, buffer, buflen, groupinfo.groupname.as_str(), &groupmembers) {
+    match fill_group_buf(result, gid, buffer, buflen, &groupinfo.groupname, &groupmembers) {
         Ok(()) => NssStatus::Success as i32,
         Err(e) => {
             match e {
@@ -452,8 +452,7 @@ pub extern "C" fn _nss_aad_getpwuid_r(uid: uid_t,
 
     let sid = format!("{}-{}", config.domain_sid, uid);
 
-    #[allow(unused_variables)]
-    let userinfo = match azure::get_user_info_by_sid(&config, sid.as_str()) {
+    let userinfo = match azure::get_user_info_by_sid(&config, &sid) {
         Ok(i) => i,
         Err(e) => {
             match e {
