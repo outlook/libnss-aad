@@ -434,6 +434,68 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
 }
 
 
+/// getpwuid
+#[no_mangle]
+pub extern "C" fn _nss_aad_getpwuid_r(uid: uid_t,
+                                      pw: *mut passwd,
+                                      buffer: *mut c_char,
+                                      buflen: size_t,
+                                      errnop: *mut i32)
+                                      -> i32 {
+
+    let config = match AadConfig::from_file("/etc/nssaad.conf") {
+        Ok(c) => c,
+        Err(_) => {
+            return nss_input_file_err(errnop);
+        }
+    };
+
+    let sid = format!("{}-{}", config.domain_sid, uid);
+
+    #[allow(unused_variables)]
+    let userinfo = match azure::get_user_info_by_sid(&config, sid.as_str()) {
+        Ok(i) => i,
+        Err(e) => {
+            match e {
+                GraphInfoRetrievalError::BadHTTPResponse { status, .. } => {
+                    match status {
+                        StatusCode::NotFound => {
+                            #[cfg(debug_assertion)]
+                            println!("libnss-aad getpwuid could not find {}", uid);
+                            return nss_entry_not_available(errnop);
+                        }
+                        _ => {
+                            return nss_out_of_service(errnop);
+                        }
+                    }
+                }
+                GraphInfoRetrievalError::TooManyResults |
+                GraphInfoRetrievalError::NotFound => {
+                    return nss_entry_not_available(errnop);
+                }
+                _ => {
+                    return nss_out_of_service(errnop);
+                }
+            };
+        }
+    };
+
+    unsafe {
+        (*pw).pw_uid = userinfo.userid as uid_t;
+        (*pw).pw_gid = config.default_user_group_id as gid_t;
+    }
+
+    match fill_passwd_buf(pw, buffer, buflen, &userinfo.username, userinfo.fullname) {
+        Ok(()) => NssStatus::Success as i32,
+        Err(e) => {
+            match e {
+                BufferFillError::ZeroByteInString => nss_entry_not_available(errnop),
+                _ => nss_insufficient_buffer(errnop),
+            }
+        }
+    }
+}					
+
 /// getpwnam returns information about the named user
 ///
 /// The `pw` argument is a pointer to an already-allocated C struct passwd, which contains

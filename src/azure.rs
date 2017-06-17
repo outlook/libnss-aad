@@ -192,6 +192,26 @@ pub fn get_user_info(config: &AadConfig, username: &str) -> GraphInfoResult<User
     extract_user_info(user_info)
 }
 
+/// Fetch a UserInfo object for the provided sid
+pub fn get_user_info_by_sid(config: &AadConfig, sid: &str) -> GraphInfoResult<UserInfo> {
+    let query_url = &format!("https://graph.windows.net/{}/users?$filter=onPremisesSecurityIdentifier+eq+'{}'&api-version=1.6",
+                             config.tenant,
+                             sid);
+    let info_json = get_graph_info(config, query_url)?;
+    let values = &serde_json::from_str::<Value>(&info_json)?["value"];
+    let users = values
+        .as_array()
+        .ok_or(GraphInfoRetrievalError::BadJSONResponse)?;
+
+    if users.len() > 1 {
+        return Err(GraphInfoRetrievalError::TooManyResults);
+    }
+    if users.len() < 1 {
+        return Err(GraphInfoRetrievalError::NotFound);
+    }
+    extract_user_info(&users[0])
+}
+
 /// Fetch a GroupInfo object for the named group
 pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<GroupInfo> {
     let group_info_json = get_graph_info(config,
