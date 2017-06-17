@@ -39,6 +39,7 @@ enum NssStatus {
 pub struct AadConfig {
     client_id: String,
     client_secret: String,
+    domain_sid: String,
     default_user_group_id: u32,
     tenant: String,
     group_ids: HashMap<String, gid_t>,
@@ -380,23 +381,10 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
         }
     };
 
-    // Iterate through the `group_ids` HashMap, collecting any keys that have a value matching the
-    // provided GID.
-    let names: Vec<String> = config
-        .group_ids
-        .iter()
-        .filter(|&(_, &i)| gid == i)
-        .map(|(n, _)| n.to_string())
-        .collect();
-    if names.is_empty() {
-        // No keys have a matching value.
-        return nss_entry_not_available(errnop);
-    }
-    // Use the first result.
-    let name = &names[0];
+    let sid = format!("{}-{}", config.domain_sid, gid);
 
     // Get the attributes of the group. Specifically we need its object ID.
-    let groupinfo = match azure::get_group_info(&config, name) {
+    let groupinfo = match azure::get_group_info_by_sid(&config, sid.as_str()) {
         Ok(i) => i,
         Err(e) => {
             match e {
@@ -430,13 +418,13 @@ pub extern "C" fn _nss_aad_getgrgid_r(gid: gid_t,
         _ => vec![],
     };
 
-    match fill_group_buf(result, gid, buffer, buflen, name, &groupmembers) {
+    match fill_group_buf(result, gid, buffer, buflen, groupinfo.groupname.as_str(), &groupmembers) {
         Ok(()) => NssStatus::Success as i32,
         Err(e) => {
             match e {
                 BufferFillError::InsufficientBuffer => nss_insufficient_buffer(errnop),
                 _ => {
-                #[cfg(debug_assertions)]
+                    #[cfg(debug_assertions)]
                     println!("libnss-aad getgrgid_r failed because {:?}", e);
                     nss_entry_not_available(errnop)
                 }
