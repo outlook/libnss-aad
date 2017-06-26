@@ -592,9 +592,3 @@ fn nss_entry_not_available(errnop: *mut i32) -> i32 {
     unsafe { *errnop = ENOENT };
     NssStatus::NotFound as i32
 }
-
-/// There are no entries. Use this to avoid returning errors for inactive services which may be
-/// enabled at a later time. This is not the same as the service being temporarily unavailable.
-fn nss_no_entries_available(_: *mut i32) -> i32 {
-    NssStatus::NotFound as i32
-}
