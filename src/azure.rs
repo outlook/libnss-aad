@@ -90,12 +90,14 @@ fn extract_user_info(userinfo: &Value) -> GraphInfoResult<UserInfo> {
         .as_str()
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
         .to_string();
-    let user_id = userinfo["immutableId"]
+    // was immutableId
+    let mut sid_parts : Vec<&str> = userinfo["onPremisesSecurityIdentifier"]
         .as_str()
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
-        .to_string()
-        .parse::<u32>()?;
-    if user_id == 0 {
+        .split('-').collect();
+    let user_id = sid_parts.pop().unwrap().parse::<u32>()?;
+    // rid < 1000 should only be built-in users
+    if user_id < 1000 {
         return Err(GraphInfoRetrievalError::UnusableImmutableID);
     }
 
@@ -119,11 +121,20 @@ fn extract_group_info(group: &Value) -> GraphInfoResult<GroupInfo> {
         .as_str()
         .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
         .to_string();
-    // we punt the question of a GID
+    let mut sid_parts : Vec<&str> = group["onPremisesSecurityIdentifier"]
+        .as_str()
+        .ok_or(GraphInfoRetrievalError::BadJSONResponse)?
+        .split('-').collect();
+    let group_id = sid_parts.pop().unwrap().parse::<u32>()?;
+    // rid < 1000 should only be built-in groups
+    if group_id < 1000 {
+        return Err(GraphInfoRetrievalError::UnusableImmutableID);
+    }
 
     Ok(GroupInfo {
            groupname: group_name,
            object_id: object_id,
+           group_id: group_id,
        })
 }
 
@@ -181,6 +192,26 @@ pub fn get_user_info(config: &AadConfig, username: &str) -> GraphInfoResult<User
     extract_user_info(user_info)
 }
 
+/// Fetch a UserInfo object for the provided sid
+pub fn get_user_info_by_sid(config: &AadConfig, sid: &str) -> GraphInfoResult<UserInfo> {
+    let query_url = &format!("https://graph.windows.net/{}/users?$filter=onPremisesSecurityIdentifier+eq+'{}'&api-version=1.6",
+                             config.tenant,
+                             sid);
+    let info_json = get_graph_info(config, query_url)?;
+    let values = &serde_json::from_str::<Value>(&info_json)?["value"];
+    let users = values
+        .as_array()
+        .ok_or(GraphInfoRetrievalError::BadJSONResponse)?;
+
+    if users.len() > 1 {
+        return Err(GraphInfoRetrievalError::TooManyResults);
+    }
+    if users.len() < 1 {
+        return Err(GraphInfoRetrievalError::NotFound);
+    }
+    extract_user_info(&users[0])
+}
+
 /// Fetch a GroupInfo object for the named group
 pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<GroupInfo> {
     let group_info_json = get_graph_info(config,
@@ -199,6 +230,26 @@ pub fn get_group_info(config: &AadConfig, groupname: &str) -> GraphInfoResult<Gr
         return Err(GraphInfoRetrievalError::NotFound);
     }
     extract_group_info(&group_values[0])
+}
+
+/// Fetch a GroupInfo object for the named group
+pub fn get_group_info_by_sid(config: &AadConfig, sid: &str) -> GraphInfoResult<GroupInfo> {
+    let query_url = &format!("https://graph.windows.net/{}/groups?$filter=onPremisesSecurityIdentifier+eq+'{}'&api-version=1.6",
+                             config.tenant,
+                             sid);
+    let info_json = get_graph_info(config, query_url)?;
+    let values = &serde_json::from_str::<Value>(&info_json)?["value"];
+    let groups = values
+        .as_array()
+        .ok_or(GraphInfoRetrievalError::BadJSONResponse)?;
+
+    if groups.len() > 1 {
+        return Err(GraphInfoRetrievalError::TooManyResults);
+    }
+    if groups.len() < 1 {
+        return Err(GraphInfoRetrievalError::NotFound);
+    }
+    extract_group_info(&groups[0])
 }
 
 /// Return a vector of UserInfo objects representing the members of the group identified by the
@@ -227,8 +278,11 @@ pub fn get_user_groups(config: &AadConfig, username: &str) -> GraphInfoResult<Ve
             Err(e) => {
                 match e {
                     GraphInfoRetrievalError::BadHTTPResponse { status, data } => {
+                        if status == hyper::status::StatusCode::NotFound {
+                            return Ok(vec![]);
+                        }
                         if data.contains("Directory_ExpiredPageToken") && retries > 0 {
-                        #[cfg(debug_assertions)]
+                            #[cfg(debug_assertions)]
                             println!("libnss-aad::azure got an ExpiredPageToken; retrying");
                             retries -= 1;
                             continue; // no kidding, this is the recommended approach.

@@ -9,6 +9,7 @@ This is a glibc NSS plugin that will query Azure Active Directory for informatio
 written in Rust. It is very, very simple, and does not even go so far as to properly use OAuth2.
 It implements the following libc functions:
 * `getpwnam`
+* `getpwuid`
 * `getgrnam`
 * `getgrgid`
 * `initgroups_dyn`
@@ -42,16 +43,16 @@ The plugin expects to read from `/etc/nssaad.conf`, which is a YAML file:
 ```yaml
 client_id: "..."
 client_secret: "..."
+default_user_group_id: ###
+domain_sid: "S-1-5-..."
 tenant: "..."
-group_ids:
-  ...: ###
-  ...
 ```
 
 * `client_id`: is the Application ID of the [AAD Application](https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-integrating-applications) that you have created, and to which you have granted it [the necessary permissions](https://msdn.microsoft.com/en-us/library/azure/ad/graph/howto/azure-ad-graph-api-permission-scopes) (namely, `Directory.Read.All`, or a combination of `User.ReadBasic.All` and `Group.Read.All`) to query data from the Graph API.
 * `client_secret`: is a key that the client can use to obtain an [OAuth2 bearer token](https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-protocols-oauth-code).
+* `default_user_group_id`: is the gid that users will have by default.
+* `domain_sid`: is the domain portion of the [SID](https://en.wikipedia.org/wiki/Security_Identifier), including S-1-5- (basically any user or group SID without the relative ID at the end). NOTE: this only supports a single AD domain at the moment.
 * `tenant`: is your [Azure AD tenant](https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-howto-tenant) name, or its GUID.
-* `group_ids`: This library does not (yet) make allowances for storing GIDs in AAD. As a workaround, you must specify GIDs within the config file. The config expects a dict named `group_ids` that maps group names to GIDs:
 
 ### NSS Configuration ###
 Add the `aad` service to the `/etc/nsswitch.conf` file. Probably something like:
